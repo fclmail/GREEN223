@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DODO Flash Loan Arbitrage</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background-color: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 { color: #333; text-align: center; }
+    .control-group { margin-bottom: 20px; padding: 15px; background-color: #f9f9f9; border-radius: 5px; }
+    label { display: inline-block; width: 200px; margin-right: 10px; }
+    input, select {
+      padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 150px;
+    }
+    button {
+      background-color: #4CAF50; color: white; padding: 10px 15px; border: none;
+      border-radius: 4px; cursor: pointer; margin-right: 10px;
+    }
+    button:hover { background-color: #45a049; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td {
+      padding: 12px; text-align: left; border-bottom: 1px solid #ddd;
+    }
+    th { background-color: #f2f2f2; }
+    tr:hover { background-color: #f5f5f5; }
+    .profitable { background-color: #e8f5e9; }
+    #log {
+      margin-top: 20px; padding: 15px; background-color: #333;
+      color: #fff; border-radius: 5px; max-height: 300px;
+      overflow-y: auto; font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>DODO Flash Loan Arbitrage</h1>
+
+  <div class="control-group">
+    <button id="connectWallet">Connect MetaMask</button>
+    <span id="wallet">Not connected</span>
+    <br><br>
+    <label>Wallet Balance (USDC):</label>
+    <span id="walletBalance">0.00</span>
+    <label style="margin-left: 20px;">Contract Balance (USDC):</label>
+    <span id="contractBalance">0.00</span>
+  </div>
+
+  <div class="control-group">
+    <label>Trade Amount (USDC):</label>
+    <input type="number" id="tradeAmount" value="100" min="1" step="1">
+    <label style="margin-left: 20px;">Slippage (%)</label>
+    <input type="number" id="slippagePct" value="0.5" step="0.1" min="0">
+    <button id="scanNow">Scan Now</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Token</th>
+        <th>Buy From</th>
+        <th>Sell To</th>
+        <th>Buy Price</th>
+        <th>Sell Price</th>
+        <th>Profit</th>
+        <th>Profit %</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="results"></tbody>
+  </table>
+
+  <div id="log"></div>
+</div>
+
+<script src="https://cdn.ethers.io/lib/ethers-5.2.umd.min.js"></script>
+<script>
+const contractAddress = "0x98FA2A393Bf5C297FE29E160B244b560a61d9976"; // Replace with your contract
+const contractABI = [ /* <-- Your Contract ABI goes here */ ];
+
+const tokens = {
+  USDC: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+  WETH: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+  WBTC: "0x1BFD67037B42CfCacA5cC73aBcB5B9Ed724722c4"
+};
+
+const routers = {
+  QuickSwap: "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+  SushiSwap: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
+  DODO: "0xa222e6a71D1A1Dd5F279805fbe38d5329C1D0e70"
+};
+
+let provider, signer, contract, walletAddress;
+
+window.onload = () => {
+  if (window.ethereum) {
+    provider = new ethers.providers.Web3Provider(window.ethereum);
+  } else {
+    provider = ethers.getDefaultProvider();
+    log("⚠️ MetaMask not found, using read-only provider");
+  }
+
+  document.getElementById("connectWallet").onclick = connectWallet;
+  document.getElementById("scanNow").onclick = scanAndArbitrage;
+};
+
+async function connectWallet() {
+  try {
+    if (!window.ethereum) throw new Error("MetaMask not installed");
+
+    const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+    walletAddress = accounts[0];
+    document.getElementById("wallet").textContent = walletAddress;
+
+    provider = new ethers.providers.Web3Provider(window.ethereum);
+    signer = provider.getSigner();
+    contract = new ethers.Contract(contractAddress, contractABI, signer);
+
+    await updateBalances();
+    log("✅ Connected: " + walletAddress);
+  } catch (err) {
+    log("⚠️ Wallet connect failed: " + err.message);
+  }
+}
+
+async function updateBalances() {
+  const usdc = new ethers.Contract(tokens.USDC, [
+    "function balanceOf(address) view returns (uint256)"
+  ], provider);
+
+  const walletBal = await usdc.balanceOf(walletAddress);
+  const contractBal = await usdc.balanceOf(contractAddress);
+
+  document.getElementById("walletBalance").textContent = ethers.utils.formatUnits(walletBal, 6);
+  document.getElementById("contractBalance").textContent = ethers.utils.formatUnits(contractBal, 6);
+}
+
+async function scanAndArbitrage() {
+  const tradeAmount = ethers.utils.parseUnits(document.getElementById("tradeAmount").value, 6);
+  const slippagePct = parseFloat(document.getElementById("slippagePct").value);
+  const results = document.getElementById("results");
+  results.innerHTML = "";
+
+  for (const [symbol, address] of Object.entries(tokens)) {
+    if (symbol === "USDC") continue;
+
+    const prices = await Promise.all([
+      getPrice(routers.QuickSwap, address, tradeAmount),
+      getPrice(routers.SushiSwap, address, tradeAmount),
+      getPrice(routers.DODO, address, tradeAmount)
+    ]);
+
+    const dexNames = ["QuickSwap", "SushiSwap", "DODO"];
+    const bestBuy = prices.reduce((min, val, i) => val.lt(min.price) ? { price: val, dex: dexNames[i] } : min, { price: prices[0], dex: dexNames[0] });
+    const bestSell = prices.reduce((max, val, i) => val.gt(max.price) ? { price: val, dex: dexNames[i] } : max, { price: prices[0], dex: dexNames[0] });
+
+    const profit = bestSell.price.sub(bestBuy.price);
+    const profitPct = profit.mul(10000).div(bestBuy.price).toNumber() / 100;
+
+    const row = document.createElement("tr");
+    if (profitPct > 0) row.classList.add("profitable");
+
+    row.innerHTML = `
+      <td>${symbol}</td>
+      <td>${bestBuy.dex}</td>
+      <td>${bestSell.dex}</td>
+      <td>${ethers.utils.formatUnits(bestBuy.price, 6)}</td>
+      <td>${ethers.utils.formatUnits(bestSell.price, 6)}</td>
+      <td>${ethers.utils.formatUnits(profit, 6)}</td>
+      <td>${profitPct.toFixed(2)}%</td>
+      <td><button onclick="executeTrade('${symbol}', '${bestBuy.dex}', '${bestSell.dex}', ${tradeAmount}, ${slippagePct})">Trade</button></td>
+    `;
+
+    results.appendChild(row);
+  }
+}
+
+async function getPrice(routerAddr, tokenAddr, amountIn) {
+  const router = new ethers.Contract(routerAddr, [
+    "function getAmountsOut(uint amountIn, address[] memory path) view returns (uint[] memory amounts)"
+  ], provider);
+
+  try {
+    const path = [tokens.USDC, tokenAddr, tokens.USDC];
+    const amounts = await router.getAmountsOut(amountIn, path);
+    return amounts[2]; // Final USDC out
+  } catch {
+    return ethers.BigNumber.from("0");
+  }
+}
+
+function log(msg) {
+  const logBox = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logBox.prepend(line);
+  if (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
+}
+
+// Needed so buttons can call this globally
+window.executeTrade = async function(symbol, buyFrom, sellTo, amount, slippagePct) {
+  log(`Simulated trade: ${symbol} from ${buyFrom} to ${sellTo} for amount ${ethers.utils.formatUnits(amount, 6)}`);
+};
+</script>
+</body>
+</html>
